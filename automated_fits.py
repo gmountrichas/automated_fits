@@ -7,83 +7,12 @@ import bxa.xspec as bxa
 import xspec
 import logging
 
+from read_stacked_catalog import read_stacked_catalog
+from list_spectra import list_spectra
+
+
 logger = logging.getLogger(__name__)
 
-# Function to read the stacked 4XMM-DR11 catalog and map SRCID to corresponding OBSIDs
-def read_stacked_catalog(catalog_file,srcid_ref):
-    """
-    Read a stacked catalog file and a SRCID and create a dictionary mapping each SRCID to its associated list of OBS_ID and SRC_NUM .
-
-    Parameters:
-    catalog_file (str): The path to the stacked catalog file.
-
-    srcid_ref (long): the SRCID to be fitted
-
-    Returns:
-    dict: A dictionary associating the SRCID to its list of OBS_ID and SRC_NUM.
-    """
-
-    with fits.open(catalog_file) as hdul:
-        catalog_data = hdul[1].data
-
-    # Create a dictionary to map each SRCID to its list of OBS_ID/SRC_NUM
-    srcid_obsid_mapping = {}
-    # Flag to see if we have reached the SRCID yet
-    found=False
-    # loop over the rows in the input file
-    for i in range(len(catalog_data)):
-        srcid = catalog_data['SRCID'][i]
-        obsid = catalog_data['OBS_ID'][i]
-        srcnum=catalog_data['SRC_NUM'][i]
-
-        # checking if this row corresponds to the input SRCID
-        if srcid==srcid_ref:    
-            if srcid in srcid_obsid_mapping:
-                # second and consecutive rows appended
-                srcid_obsid_mapping[srcid].append((obsid,srcnum))
-            else:
-                # ignoring the first row for each SRCID, because no OBS_ID on it
-                # initializing the list of tuples (OBS_ID,SRC_NUM)
-                srcid_obsid_mapping[srcid] = []
-                # setting the flag
-                found=True
-        elif found:
-            # all rows for the same SRCID are consecutive so, once SRCID has been found
-            #     all following rows with different SRCID can be safely skipped
-            break
-
-    return srcid_obsid_mapping
-
-
-def test_read_stacked_catalog():
-      # test catalogue
-      infile='./test_data/test_catalogue.fits'
-      
-      # srcid to check
-      srcids=[]
-      # this should not be in the file
-      srcids.append(1000000000000000)
-      # this should return 0 hits
-      srcids.append(3072415020100239)
-      # this should return 1 hit
-      srcids.append(3040339010100035)
-      # this should reutnr 5 hits
-      srcids.append(3030408050100122)
-      #
-      # expected results
-      results=[-1,0,1,5]
-      
-      for i in range(len(srcids)):
-          srcid=srcids[i]
-          result=results[i]
-          dic=read_stacked_catalog(infile,srcid)
-          if (len(dic)==0):
-              # if SRCID not found, setting the value to -1
-              ndic=-1
-          else:
-              ndic=len(dic[srcid])
-          
-          assert ndic==result
 
 
 # Function to check which spectra are suitable for fitting
@@ -262,6 +191,7 @@ def main():
     parser = argparse.ArgumentParser()
 
     # Paths to data and scripts
+    parser.add_argument("srcid", type=long, help="SRCID of the source whose spectra are to be fitted")
     parser.add_argument("data_dir", help="Path to the directory containing the data")
     parser.add_argument("script_dir", help="Path to the directory containing the scripts")
 
@@ -297,17 +227,49 @@ def main():
     parser.add_argument("--overwrite", type=int, default=1, help="overwrite existing model")
     args = parser.parse_args()
 
+    #
+    srcid=long(args.srcid)
+
+    # Define output directory and log file for the SRCID
+    output_dir = os.path.join(args.data_dir, srcid)
+    # Set up logging
+    log_file = os.path.join(output_dir, f"{srcid}_process_log.txt")
+    logging.basicConfig(filename=log_file, level=logging.INFO)
+
     
+    #
+    message=f'\n\n Working on SRCID {srcid} '
+    logger.info(message)
     # Read the catalog and map each SRCID to its corresponding OBSIDs
-    srcid_obsid_mapping = read_stacked_catalog(args.catalog)
+    srcid_obsid_mapping = read_stacked_catalog(args.catalog,srcid)
+    if(len(srcid_obsid_mapping)>0):
+        # SRCID found in file
+        nout=len(srcid_obsid_mapping[srcid])
+        message=f"   SRCID {srcid} : {nout} OBS_ID,SRC_NUM tuples found "
+        logger.info(message)
+        message=f'      tuples {srcid_obsid_mapping}'
+        logger.info(message)
+     else:
+        # SRCID not found
+        message = f"SRCID {srcid} not found in file {infile}"
+        logger.error(message)
+    #
+
+    
+    # Getting the list of spectra for SRCID actually present in the data directory
+    srcid_list_spectra=list_spectra(srcid,srcid_obsid_mapping,args.data_dir)
+    nspec=len(srcid_list_spectra)
+    message=f'   {nspec} spectra found for SRCID {srcid}'
+    logger.info(message)
+    for spec in srcid_list_spectra:
+        message=f'      Spectrum {spec}'
+        logger.info(message)
+    #
+    
+
     results = []
 
     for srcid, obsids in srcid_obsid_mapping.items():
-        # Define output directory and log file for the SRCID
-        output_dir = os.path.join(args.data_dir, srcid)
-        # Set up logging
-        log_file = os.path.join(output_dir, f"{srcid}_process_log.txt")
-        logging.basicConfig(filename=log_file, level=logging.INFO)
 
 
         # Initialize log file for this SRCID
