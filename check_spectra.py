@@ -14,7 +14,8 @@ def check_spectra(list_spectra, responses_dir, output_dir, log_file):
     Check the spectra for a given list of spectra. The good spectra are ungrouped and copied to output_dir
        together with soft links to their corresponding background, arf and rmf files
     
-    If no pn spectra are selected, one element is added to pn_spectra with the highest flag that applies to all spectra
+    If no pn spectra are selected, but at least one background spectrum has >0 counts or one source
+        spectrum has >0 counts, one element is added to pn_spectra with the highest flag that applies to all spectra
     Similarly for MOS
     
     
@@ -50,6 +51,15 @@ def check_spectra(list_spectra, responses_dir, output_dir, log_file):
         name=spectrum_file.split('/')[-1]
         banner=name
         #
+        # Initializing values for output tuple
+        sp_counts=np.nan
+        bg_counts=np.nan
+        sp_netcts=np.nan
+        sp_exp=np.nan
+        # Initializing output tuples, only used when no spectra suitable for fitting are found
+        pn_tuple=('',sp_counts,bg_counts,sp_netcts,sp_exp,-1)
+        mos_tuple=('',sp_counts,bg_counts,sp_netcts,sp_exp,-1)
+        #
         # Check if the source spectrum exists
         #    going for next spectrum if it does not
         if not os.path.exists(spectrum_file):
@@ -70,17 +80,26 @@ def check_spectra(list_spectra, responses_dir, output_dir, log_file):
             else:
                 # both source and background specra exist, finding out whether it is a pn or MOS spectrum
                 pn= (banner.find("PN")>0)
-                # Check the counts in the background spectrum
+                
+                # Counts in the background spectrum
                 with fits.open(background_file) as bg_hdul:
                     bg_counts = bg_hdul[1].data['COUNTS'].sum()
                     bg_backscal=bg_hdul[1].header['BACKSCAL']
-                
-                if bg_counts > 0:  # Only proceed if background has counts
                     
-                    with fits.open(spectrum_file) as sp_hdul:
+                # Counts in source spectrum
+                with fits.open(spectrum_file) as sp_hdul:
                         sp_counts = sp_hdul[1].data['COUNTS'].sum()
                         sp_header=sp_hdul[1].header
+                
+                        # calculating net counts
+                        sp_backscal=sp_header['BACKSCAL']
+                        sp_exp=sp_header['EXPOSURE']
+                        sp_netcts=sp_counts-bg_counts*sp_backscal/bg_backscal
+
+
+                if bg_counts > 0:  # Only proceed if background has counts
                     
+                                       
                     if sp_counts > 0:  # Only proceed if source spectrum has counts
                     
                         # verifying now that the arf file exists
@@ -109,10 +128,6 @@ def check_spectra(list_spectra, responses_dir, output_dir, log_file):
                                 continue
                             else:
                                 # all necessary files present
-                                # calculating net counts
-                                sp_backscal=sp_header['BACKSCAL']
-                                sp_exp=sp_header['EXPOSURE']
-                                sp_netcts=sp_counts-bg_counts*sp_backscal/bg_backscal
                                 
                                 if (sp_netcts >0):
                                     # This spectrum is suitable for fitting
@@ -147,10 +162,19 @@ def check_spectra(list_spectra, responses_dir, output_dir, log_file):
                                     message = f"      spectrum:{banner} - Source spectrum has <=0 net counts"
                                     logger.info(message)
                                     if (pn):
-                                        pn_flag=max(pn_flag,2)
+                                        # always updating pn_tuple
+                                        # spectra with sp_counts>0 but sp_netcts<0 take precedence in output
+                                        # and, among them, the latest to be processed
+                                        pn_flag=2
+                                        pn_tuple=(spectrum_file,sp_counts,bg_counts,sp_netcts,sp_exp,pn_flag)
                                     else:
-                                        mos_flag=max(mos_flag,2)
+                                        # always updating mos_tuple
+                                        # spectra with sp_counts>0 but sp_netcts<0 take precedence in output
+                                        # and, among them, the latest to be processed
+                                        mos_flag=2
+                                        mos_tuple=(spectrum_file,sp_counts,bg_counts,sp_netcts,sp_exp,mos_flag)
                                     #spectrum
+                                    
                                 #
                             #
                         #
@@ -158,9 +182,19 @@ def check_spectra(list_spectra, responses_dir, output_dir, log_file):
                         message = f"      spectrum:{banner} - Source spectrum has <=0 total counts"
                         logger.info(message)
                         if (pn):
-                            pn_flag=max(pn_flag,2)
+                            if (pn_flag<=1 or pn_flag[3]<=0):
+                                # only updating pn_tuple if only spectra with <=0 bgd counts or
+                                #      only spectra with <=0 total source counds found yet
+                                # spectra with sp_counts>0 but sp_netcts<0 take precedence in output
+                                pn_flag=2
+                                pn_tuple=(spectrum_file,sp_counts,bg_counts,sp_netcts,sp_exp,pn_flag)
                         else:
-                            mos_flag=max(mos_flag,2)
+                            if (mos_flag<=1 or mos_flag[3]<=0):
+                                # only updating mos_tuple if only spectra with <=0 bgd counts or
+                                #      only spectra with <=0 total source counds found yet
+                                # spectra with sp_counts>0 but sp_netcts<0 take precedence in output
+                                mos_flag=2
+                                mos_tuple=(spectrum_file,sp_counts,bg_counts,sp_netcts,sp_exp,mos_flag)
                         #
                 else:
                     # no background counts for this spectrum: updating the corresponding maximum
@@ -168,25 +202,35 @@ def check_spectra(list_spectra, responses_dir, output_dir, log_file):
                     message = f"      spectrum:{banner} - Background spectrum has <=0 total counts"
                     logger.info(message)
                     if (pn):
-                        pn_flag=max(pn_flag,1)
+                        if (pn_flag<=1):
+                            # only updating pn_tuple if no pn spectra with >0 counts found yet
+                            pn_flag=1
+                            pn_tuple=(spectrum_file,sp_counts,bg_counts,sp_netcts,sp_exp,pn_flag)
                     else:
-                        mos_flag=max(mos_flag,1)
+                        if (mos_flag<=1):
+                            # only updating mos_tuple if no MOS spectra with >0 counts found yet
+                            mos_flag=1
+                            mos_tuple=(spectrum_file,sp_counts,bg_counts,sp_netcts,sp_exp,mos_flag)
+
                     #
                     continue
                 #
             #
         #
         
-    # if no useful pn spectra, formatting output
-    if (len(pn_spectra)==0):
-        pn_spectra.append(('none',np.nan,np.nan,np.nan,np.nan,pn_flag))
+    # if no pn spectra suitable for fitting, formatting output
+    if (len(pn_spectra)==0 and pn_flag>0):
+        # only enters here if no pn spectrum suitable for fitting is found
+        #    but at least one spectrum 
+        pn_spectra.append(pn_tuple)
+    # otherwise, returning empty list
 
-    # if no useful pn spectra, formatting output
-    if (len(mos_spectra)==0):
-        mos_spectra.append(('none',np.nan,np.nan,np.nan,np.nan,mos_flag))
-            
-    
-    
+    # if no MOS spectra suitable for fitting, formatting output
+    if (len(mos_spectra)==0 and mos_flag>0):
+        mos_spectra.append(mos_tuple)
+    # otherwise, returning empty list
+
+                    
     return pn_spectra,mos_spectra
 
 
@@ -207,13 +251,13 @@ def test_check_spectra():
     # that spectrum is suitable for fitting
     assert pn_list[0][5]==0
     # no MOS spectra suitable for fitting
-    assert mos_list[0][5]==-1
+    assert len(mos_list)==0
     #
     # only MOS
     list_spectra=['./test_data/0760940101/pps/P0760940101M1S001SRSPEC0017.FTZ','./test_data/0760940101/pps/P0760940101M2S002SRSPEC0017.FTZ']
     pn_list,mos_list=check_spectra(list_spectra, responses_dir, output_dir, log_file)
     # no pn spectrum is suitable for fitting
-    assert pn_list[0][5]==-1
+    assert len(pn_list)==0
     # two MOS spectra
     assert len(mos_list)==2
     # both MOS spectra suitable for fitting

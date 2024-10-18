@@ -1,72 +1,22 @@
 import argparse
 import os
-import glob
-import numpy as np
-from astropy.io import fits
+import sys
+#import glob
+#import numpy as np
+#from astropy.io import fits
 import bxa.xspec as bxa
 import xspec
 import logging
 
 from read_stacked_catalog import read_stacked_catalog
 from list_spectra import list_spectra
+from check_spectra import check_spectra
 
 
 logger = logging.getLogger(__name__)
 
 
 
-# Function to check which spectra are suitable for fitting
-def check_spectra(data_dir, srcid, obsids, log_file):
-    """
-    Check the spectra for a given source and list of observation IDs.
-    Parameters:
-    - data_dir (str): The directory where the spectra files are located.
-    - srcid (str): The source ID.
-    - obsids (list): A list of observation IDs.
-    - log_file (str): The log file to write the messages.
-    Returns:
-    - good_spectra (list): A list of tuples containing the observation ID, source counts, background counts, and SNR for spectra that pass the checks.
-    """
-
-    good_spectra = []
-    for obsid in obsids:
-        # Define paths to the spectrum and background files
-        spectrum_file = f"{data_dir}/{srcid}/{obsid}_SRSPEC0001.FTZ"
-        background_file = f"{data_dir}/{srcid}/{obsid}_BGSPEC0001.FTZ"
-        
-        # Check if the source spectrum and background spectrum files exist
-        if not os.path.exists(spectrum_file):
-            message = f"SRCID {srcid}: OBSID {obsid} - Missing source spectrum"
-            logger.info(message)
-            continue
-        
-        if not os.path.exists(background_file):
-            message = f"SRCID {srcid}: OBSID {obsid} - Missing background spectrum"
-            logger.info(message)
-            continue
-        
-        # Check the counts in the background spectrum
-        with fits.open(background_file) as bg_hdul:
-            bg_counts = bg_hdul[1].data['COUNTS'].sum()
-        
-        if bg_counts > 0:  # Only proceed if background has counts
-            with fits.open(spectrum_file) as sp_hdul:
-                sp_counts = sp_hdul[1].data['COUNTS'].sum()
-            
-            if sp_counts > 0:  # Only proceed if source spectrum has counts
-                # Calculate Signal-to-Noise Ratio (SNR)
-                snr = sp_counts / np.sqrt(sp_counts + bg_counts)
-                good_spectra.append((obsid, sp_counts, bg_counts, snr))
-                message = f"SRCID {srcid}: OBSID {obsid} - SNR {snr:.2f} (Good for fitting)"
-                logger.info(message)
-            else:
-                message = f"SRCID {srcid}: OBSID {obsid} - Source spectrum has zero counts"
-                logger.info(message)
-        else:
-            message = f"SRCID {srcid}: OBSID {obsid} - Background spectrum has zero counts"
-            logger.info(message)
-            
-    return good_spectra
 
 # Function to perform the BXA fitting for a given SRCID and spectrum
 def fit_with_bxa(srcid, obsid, spectrum_file, background_file, model_name, redshift, use_galabs, use_tbabs_table, output_dir, log_file):
@@ -191,12 +141,14 @@ def main():
     parser = argparse.ArgumentParser()
 
     # Paths to data and scripts
-    parser.add_argument("srcid", type=long, help="SRCID of the source whose spectra are to be fitted")
+    parser.add_argument("srcid", type=int, help="SRCID of the source whose spectra are to be fitted")
     parser.add_argument("data_dir", help="Path to the directory containing the data")
     parser.add_argument("script_dir", help="Path to the directory containing the scripts")
+    parser.add_argument("responses_dir", help="Path to the directory containing the response matrices")
+    parser.add_argument("output_dir", help="Path to the output directory")
 
-    parser.add_argument("catalog", help="Path to the stacked catalog FITS file")
-    parser.add_argument("output", help="Path to the output file for results")
+    parser.add_argument("catalog", help="Stacked catalog FITS filename (including path)")
+    parser.add_argument("output", help="Name to the output file with fit results")
     parser.add_argument("--init", action="store_true", help="initialize the directory")
     parser.add_argument("--combine", action="store_true", help="re-merge the spectra")
     parser.add_argument("--fit_bkg", action="store_true", help="fit the background model")
@@ -228,10 +180,10 @@ def main():
     args = parser.parse_args()
 
     #
-    srcid=long(args.srcid)
+    srcid=int(args.srcid)
 
     # Define output directory and log file for the SRCID
-    output_dir = os.path.join(args.data_dir, srcid)
+    output_dir = os.path.join(args.output_dir, args.srcid)
     # Set up logging
     log_file = os.path.join(output_dir, f"{srcid}_process_log.txt")
     logging.basicConfig(filename=log_file, level=logging.INFO)
@@ -248,11 +200,14 @@ def main():
         message=f"   SRCID {srcid} : {nout} OBS_ID,SRC_NUM tuples found "
         logger.info(message)
         message=f'      tuples {srcid_obsid_mapping}'
-        logger.info(message)
-     else:
+        logger.info(message)     
+    else:
         # SRCID not found
-        message = f"SRCID {srcid} not found in file {infile}"
+        message = f"SRCID {srcid} not found in file {args.catalog}"
         logger.error(message)
+        #
+        # terminating the program with error 1 (srcid not found in catalogue file)
+        sys.exit(1)
     #
 
     
@@ -265,8 +220,39 @@ def main():
         message=f'      Spectrum {spec}'
         logger.info(message)
     #
-    
+    if (nspec==0):
+        message=f' No spectra found for SRCID {srcid}'
+        logger.error(message)
+        #
+        # terminating the program with error 2 (no spectra found for srcid)
+        sys.exit(2)
+    #
 
+
+    # Checking if the spectra present are suitable for fitting
+    pn_list,mos_list=check_spectra(srcid_list_spectra, args.responses_dir, output_dir, log_file)
+    #
+    # number of pn spectra suitable for fitting, or with source or background counts
+    npn=len(pn_list)
+    #
+    # number of MOS spectra suitable for fitting, or with source or background counts
+    nmos=len(mos_list)
+    #
+    
+    if (npn+nmos==0):
+        message=f'No spectra suitable for fitting found for SRCID {srcid}'
+        logger.error(message)
+        #
+        # terminating the program with error 3 (no spectra suitable for fitting for srcid)
+        sys.exit(3)
+    #
+        
+
+    # Bits below remain from original version, commenting them out
+    # They will be superseded (eventually) by calls to merge_spectra,perform_spectrum_fitting...
+    
+    
+    '''
     results = []
 
     for srcid, obsids in srcid_obsid_mapping.items():
@@ -296,6 +282,8 @@ def main():
             f.write(f"SRCID: {srcid}\n")
             for spectrum in spectra:
                 f.write(f"  OBSID: {spectrum[0]}, Source Counts: {spectrum[1]}, Background Counts: {spectrum[2]}, SNR: {spectrum[3]:.2f}\n")
+
+'''
 
 # Function to perform the BXA fitting for a given SRCID based on selected model
 def perform_spectrum_fitting(args, srcid, log_file, good_spectra):
