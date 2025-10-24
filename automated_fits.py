@@ -38,7 +38,8 @@ from list_spectra import list_spectra
 from check_spectra import check_spectra
 from merge_spectra import merge_spectra
 from spectral_fitting import perform_spectrum_fitting
-from spectral_fitting_bxa_adapted import fit_spectrum_bxa, export_bxa_results_to_fits
+from spectral_fitting_bxa_adapted import fit_spectrum_bxa, export_bxa_results_to_fits, check_background_fit
+
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +193,36 @@ def main():
         background_files = []
         rmf_files = []
         arf_files = []
+        
+        
+        # === NEW: pre-filter instruments by unified background gate (flag=3 logic) ===
+        valid_specs = []
+        for spec in fit_list:
+            sp_dic = spec[8]
+            spectrum_file = sp_dic['SPECFILE']
+            bkg_file      = sp_dic['BACKFILE']
+            rmf_file      = sp_dic['RESPFILE']
+            arf_file      = sp_dic['ANCRFILE']
+
+            inst = spec[7] if len(spec) > 7 else "unknown"
+
+            logger.info(f"   Checking background for instrument {inst} (SRCID {srcid})")
+            pval = check_background_fit(spectrum_file, bkg_file, rmf_file, arf_file,
+                                    args.model_name, args.redshift, logger, srcid=str(srcid))
+            if pval is None:
+                logger.warning(f"   Background NOT OK for {inst} → skipping this instrument")
+            else:
+                valid_specs.append(spec)
+
+        # Decision logic: if nothing survives, flag source as 3 and stop
+        if not valid_specs:
+            logger.warning(f"   No valid instruments left after background check → flagging SRCID {srcid} as 3")
+            print(f"   Skipping source {srcid} (flag=3)")
+            # keep your existing behavior: stop this srcid but continue overall
+            return
+        # Otherwise, use only valid_specs for fitting
+        fit_list = valid_specs
+
 
         for spec in fit_list:
             sp_dic = spec[8]
@@ -220,23 +251,25 @@ def main():
             log_file=log_file
         )
 
-        if results["flag"] == 3:
-            logger.warning(f"   Skipping source {srcid} due to background fitting issue.")
-            print(f"   Skipping source {srcid} due to background fitting issue.")
-        elif results["flag"] == 0:
-            message = "\nFit completed successfully"
+        # --- Unified background failure handling ---
+        if results.get("flag", 0) == 3:
+            logger.warning(f"   Skipping source {srcid} due to background failure (unified flag=3).")
+            print(f"   Skipping source {srcid} due to background failure (flag=3).")
+            return
+
+        if results.get("flag", 0) == 0:
+            message = "\n\nFit completed successfully "
             all_fit_results.append(results)
-            for par, med, p16, p84 in zip(
-                results["parameter_names"],
-                results["posterior_median"],
-                results["posterior_p16"],
-                results["posterior_p84"]
-            ):
+            for par, med, p16, p84 in zip(results["parameter_names"],
+                                          results["posterior_median"],
+                                          results["posterior_p16"],
+                                          results["posterior_p84"]):
                 message += f"\n   {par} (median [percentiles 16,84]): {med:.3e} [{p16:.3e},{p84:.3e}]"
             print(message)
             logger.info(message)
         else:
-            message = f'\nFit failed with flag={results["flag"]} \n'
+            logger.info('\n\n')
+            message = f'\n\nFit failed with flag={results["flag"]} \n\n '
             logger.error(message)
             print(f'\n\n    ERROR 6: Fit failed with flag={results["flag"]} \n\n')
             sys.exit(6)
