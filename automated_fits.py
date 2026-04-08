@@ -38,7 +38,8 @@ from list_spectra import list_spectra
 from check_spectra import check_spectra
 from merge_spectra import merge_spectra
 from spectral_fitting import perform_spectrum_fitting
-from spectral_fitting_bxa_adapted import fit_spectrum_bxa, export_bxa_results_to_fits, check_background_fit
+from spectral_fitting_bxa_adapted_iin import fit_spectrum_bxa, export_bxa_results_to_fits, check_background_fit
+#from spectral_fitting_bxa_adapted import fit_spectrum_bxa, export_bxa_results_to_fits, check_background_fit
 
 
 logger = logging.getLogger(__name__)
